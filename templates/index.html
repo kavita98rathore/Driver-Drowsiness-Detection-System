@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Driver Drowsiness Detection System</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f4f6f8;margin:0;padding:24px;text-align:center}
+h1{margin-bottom:8px}
+p{color:#555}
+.card{max-width:850px;margin:auto;background:white;padding:20px;border-radius:14px;box-shadow:0 4px 18px #0001}
+video{width:100%;max-width:640px;border-radius:10px;background:#111}
+canvas{display:none}
+button{padding:12px 22px;border:0;border-radius:8px;cursor:pointer;font-size:16px;margin:8px}
+#status{font-size:20px;font-weight:bold;margin:14px}
+.alert{color:#c00}
+.ok{color:#087f23}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Driver Drowsiness Detection System</h1>
+<p>Allow camera access, then start detection.</p>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas" width="640" height="480"></canvas>
+<br>
+<button id="start">Start Detection</button>
+<button id="stop">Stop</button>
+<div id="status" class="ok">Detection stopped</div>
+<audio id="alarm" src="/static/alarm.wav" preload="auto"></audio>
+</div>
+
+<script>
+const video=document.getElementById("video");
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+const startBtn=document.getElementById("start");
+const stopBtn=document.getElementById("stop");
+const statusEl=document.getElementById("status");
+const alarm=document.getElementById("alarm");
+let stream=null, running=false, busy=false, alarmReady=false;
+
+function setStatus(text, alert=false){
+  statusEl.textContent=text;
+  statusEl.className=alert ? "alert" : "ok";
+}
+
+startBtn.onclick=async()=>{
+  try{
+    alarmReady=true;
+    await alarm.play(); alarm.pause(); alarm.currentTime=0;
+    stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+    video.srcObject=stream;
+    running=true;
+    setStatus("Detection running");
+    loop();
+  }catch(e){
+    setStatus("Camera permission is required.", true);
+  }
+};
+
+stopBtn.onclick=()=>{
+  running=false;
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  stream=null;
+  setStatus("Detection stopped");
+  alarm.pause(); alarm.currentTime=0;
+};
+
+async function loop(){
+  if(!running || busy) return;
+  busy=true;
+  ctx.drawImage(video,0,0,640,480);
+  canvas.toBlob(async(blob)=>{
+    try{
+      const r=await fetch("/process_frame",{method:"POST",body:blob});
+      const jpg=await r.blob();
+      const img=await createImageBitmap(jpg);
+      ctx.drawImage(img,0,0,640,480);
+      // Read the hidden markers placed by the server is intentionally avoided;
+      // visual result is shown by the processed frame itself.
+      // Browser alarm can be activated when the visible alert is detected
+      // by the client-side timer below if server reports it in response headers.
+      const drowsy=r.headers.get("X-Drowsy")==="1";
+      const yawn=r.headers.get("X-Yawn")==="1";
+      if(drowsy){
+        setStatus("DROWSINESS ALERT!",true);
+        if(alarmReady){ alarm.currentTime=0; alarm.play().catch(()=>{}); }
+      }else if(yawn){
+        setStatus("YAWNING DETECTED",true);
+      }else{
+        setStatus("Detection running");
+      }
+    }catch(e){}
+    busy=false;
+    if(running) setTimeout(loop,80);
+  },"image/jpeg",0.75);
+}
+</script>
+</body>
+</html>
